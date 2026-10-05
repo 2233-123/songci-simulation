@@ -59,9 +59,29 @@ GRANT_SUBID_UNIT = 1.0
 def _trunc_abs(v: float) -> float:
     """取绝对值向下取整, 保留符号 (即向 0 截断): 7.9 -> 7, -7.9 -> -7, 0.69 -> 0。
 
-    用户 2026-10-03: 择律后「条目对应的加成属性」一律舍弃小数部分。
+    用户 2026-10-03 / 2026-10-05: **择律产生的所有绝对值**一律舍弃小数部分
+    (民心 / 威望 / 军心 / 腐化 / 歌板 / 词元 …), 不只是词句条目效果。
     """
     return float(math.copysign(math.floor(abs(float(v))), float(v)))
+
+
+#: 这些 granted 键不是"属性", 不参与取整 (加成 / 词情 / 未识别累计)
+_NON_ATTR_GRANT_KEYS = frozenset({BENEFIT_BONUS_KEY, UNKNOWN_KEY,
+                                  SENTIMENT_BOLD_KEY, SENTIMENT_GRACEFUL_KEY})
+
+
+def _floor_grant(attr: str, value: float) -> float:
+    """择律给出的一笔属性增减: 绝对值向下取整, 保留符号。
+
+    用户 2026-10-05 指出: 早期只对**词句条目**取整, 于是
+    唱词人「歌板+1」乘上 1.05 的择律收益加成后会写出 1.05 这种小数
+    (事件流里能看到 108.1 / 118.21 / 17.1 这类歌板余额)。
+    现在凡是 add_type = 绝对值/加算 的属性增减, 无论来自词句、词人、名臣还是
+    唱词人, 都统一取整; 百分比效果 (add_type=2) 走乘算通道, 不属于"绝对值"。
+    """
+    if attr in _NON_ATTR_GRANT_KEYS:
+        return float(value)
+    return _trunc_abs(value)
 
 # 个别子 ID 的**原始量纲**与"层"不同, 需要按游戏口径折算:
 #   军规 28399 —— 文案「正确择豪放律时，军规+1%（至多20层）」，即 1 层 = 1 个百分点;
@@ -110,7 +130,7 @@ def _apply_effect(granted: dict[str, float], counters: dict[str, int],
         return
     fast = E.EFFECT_VALUE_ATTR.get(int(effect_type))
     if fast is not None:
-        granted[fast] = granted.get(fast, 0.0) + value
+        granted[fast] = granted.get(fast, 0.0) + _floor_grant(fast, value)
         return
     etype = int(effect_type)
     if etype == C.EFF_GRANT_CARD:
@@ -166,7 +186,7 @@ def _apply_effects(granted: dict[str, float], counters: dict[str, int],
                 continue
             attr = attr_map.get(etype)
             if attr is not None:
-                granted[attr] = g_get(attr, 0.0) + value
+                granted[attr] = g_get(attr, 0.0) + _floor_grant(attr, value)
             else:
                 _apply_effect(granted, counters, etype, value)
         return
@@ -181,7 +201,7 @@ def _apply_effects(granted: dict[str, float], counters: dict[str, int],
                 value = value * factor
             elif not positive_only:
                 value = value * factor
-            granted[attr] = g_get(attr, 0.0) + value
+            granted[attr] = g_get(attr, 0.0) + _floor_grant(attr, value)
         else:
             if value > 0.0:
                 value = value * factor
@@ -404,10 +424,10 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
     for attr, (lo, hi) in M.INIT_ATTRIBUTE_BOUNDS.items():
         state[attr] = min(max(state.get(attr, 0.0), lo), hi)
     for attr, delta in runtime.startup_attrs.items():
-        state[attr] = state.get(attr, 0.0) + delta
-    # 开局一次性里的百分比效果 (add_type=2): 后于加算生效
+        state[attr] = state.get(attr, 0.0) + _floor_grant(attr, delta)
+    # 开局一次性里的百分比效果 (add_type=2): 后于加算生效, 结果同样取整
     for attr, mult in runtime.startup_mults.items():
-        state[attr] = state.get(attr, 0.0) * (1.0 + mult)
+        state[attr] = _floor_grant(attr, state.get(attr, 0.0) * (1.0 + mult))
 
     bold = max(0, min(cap, int(config.init_bold_sentiment) + int(runtime.sentiment_bonus_bold)))
     graceful = max(0, min(cap, int(config.init_graceful_sentiment) + int(runtime.sentiment_bonus_graceful)))
@@ -498,10 +518,9 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
                     value = value * factor
                 elif not positive_only:
                     value = value * factor
-            # 择律后「条目对应的加成属性」舍弃小数部分 (用户 2026-10-03):
+            # 择律得到的绝对值一律取整 (用户 2026-10-03 / 2026-10-05):
             # 例: 条目基础 2 歌板 × 收益系数 3.95 = 7.9 -> **7**。
-            # 取绝对值向下取整并保留符号; 词人/名臣效果的加成**不**取整。
-            value = _trunc_abs(value)
+            value = _floor_grant(attr, value)
             granted[attr] = granted.get(attr, 0.0) + value
         if verse.special_effects:
             _apply_effects(granted, counters, verse.special_effects, bonus, positive_only)
@@ -520,7 +539,8 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
             if pm:
                 runtime.merge(pm)
                 for attr, delta in pm.startup_attrs.items():
-                    granted[attr] = granted.get(attr, 0.0) + delta
+                    # 局中解锁词人带来的属性增减也属于"择律"产物 -> 同样取整
+                    granted[attr] = granted.get(attr, 0.0) + _floor_grant(attr, delta)
                 bonus += pm.benefit_bonus
                 # **词情层数加成也必须立刻生效** (苏轼词人「豪放+5 / 婉约+5」)。
                 # 早期只补了 startup_attrs 与 benefit_bonus, 漏掉词情 ——
@@ -620,10 +640,11 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
                 continue
             state[attr] = state.get(attr, 0.0) + delta
         # add_type=2 的百分比乘算: 先加算后乘算 (顺序: 加算 -> 乘算)
+        # 乘算结果同样取整 —— 否则属性会留下小数 (用户要求所有择律结果都是整数)。
         for attr, mult in multipliers.items():
             if attr.startswith("__"):
                 continue
-            state[attr] = state.get(attr, 0.0) * (1.0 + mult)
+            state[attr] = _floor_grant(attr, state.get(attr, 0.0) * (1.0 + mult))
         # 下限: 只有歌板/词元不允许为负 (M.NON_NEGATIVE_ATTRIBUTES)。
         # 民心/军心/腐化 **不设上下限** —— 虽然 `EffectTypeConfig` 里它们写着 `[0,100]`,
         # 但用户 2026-10-03 明确「民心军心腐化都不设上下限」, 故允许为负、也不封顶。
