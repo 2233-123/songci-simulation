@@ -1,0 +1,28 @@
+# 运行产物 / 本地数据 —— 一律不入库
+输出结果/
+_probe/
+docs/
+tools/
+tests/
+配置_*.json
+
+# 数据库口令 (本地开发用)
+.db_password
+
+# 游戏解包数据 (版权不属于本项目, 需自备)
+游戏数据/
+*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
