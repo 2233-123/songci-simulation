@@ -158,10 +158,31 @@ def add_seed_scopes(scopes: dict[int, set[str]], poet_policy_ids: set[int],
 
 # ---------------------------------------------------------------- 主流程
 
+#: 建库所需的 8 个游戏配置 JSON (仓库不含, 需使用者自备)
+REQUIRED_JSONS = ("VERSE_JSON", "POET_JSON", "SINGER_JSON", "POLICY_JSON",
+                  "EFFECT_TYPE_JSON", "MINISTER_JSON", "DONGPO_JSON",
+                  "COMMON_EFFECT_POOL_JSON")
+
+
+def require_data_files() -> None:
+    """检查原始配置文件是否齐全; 缺任何一个都给出可操作的报错。"""
+    missing = [getattr(C, n) for n in REQUIRED_JSONS if not getattr(C, n).exists()]
+    if missing:
+        listing = "\n".join(f"  - {p}" for p in missing)
+        raise SystemExit(
+            "[错误] 缺少游戏数据文件, 无法建库:\n" + listing +
+            f"\n请把游戏导出的 JSON 放到 {C.GAME_DATA_DIR}"
+            "  (或设置环境变量 SONGCI_GAME_DATA_DIR 指向其所在目录;"
+            " 也可直接摊在项目根目录)。\n详见 README 的「数据准备」一节。"
+        )
+
+
 def ingest() -> None:
     D.log("=" * 70)
     D.log("M1 · 规范化入库")
     D.log("=" * 70)
+
+    require_data_files()
 
     # ---- 读取原始配置
     verses = load_records(C.VERSE_JSON, "SongCiVerseConfig")
