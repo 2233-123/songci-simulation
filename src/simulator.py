@@ -596,7 +596,7 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
                     and singer.effect_type is not None:
                 _b = granted.get("board", 0.0)
                 _apply_effect(granted, counters, singer.effect_type, singer.effect_value)
-                _take(f"唱词人{singer.name}·解锁词人时", _b)
+                _take(f"唱词人{game.singer_name(singer.singer_id)}·解锁词人时", _b)
                 result.singer_triggered += 1
 
         # 唱词人 苏轸: 正确择苏轼词
@@ -610,7 +610,7 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
                               float(singer.sentiment_bonus))
                 _apply_effect(granted, counters, C.EFF_GRACEFUL_SENTIMENT,
                               float(singer.sentiment_bonus))
-            _take(f"唱词人{singer.name}·唱中本命词人", _b)
+            _take(f"唱词人{game.singer_name(singer.singer_id)}·唱中本命词人", _b)
             result.singer_triggered += 1
 
         # 每次择律触发的政策规则; singer_policy_ids 内的触发同时计入 singer_triggered

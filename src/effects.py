@@ -241,6 +241,12 @@ def load_singer_features() -> dict[int, str]:
     return {int(r[0]): (r[1] or "") for r in rows}
 
 
+def load_singer_names() -> dict[int, str]:
+    """唱词人 ID -> 名称 (供日志/文案显示)。"""
+    import db
+    return {int(r[0]): (r[1] or "") for r in db.fetch_all("SELECT id, name FROM singer")}
+
+
 # 模块级只读配方表 (测试可独立使用, 不触发连库)
 SINGER_RULES: dict[int, SingerRule] = {
     1: SingerRule(singer_id=1, feature_desc="每次择律错误时，获得歌板+1", module="none"),
@@ -877,6 +883,7 @@ class GameData:
     mods: ModifierSet
     singer_rules: Mapping[int, SingerRule] = field(default_factory=lambda: dict(SINGER_RULES))
     singer_favors: Mapping[int, tuple[int, int]] = field(default_factory=dict)
+    singer_names: Mapping[int, str] = field(default_factory=dict)
     poet_mods: Mapping[int, ModifierSet] = field(default_factory=dict)
     draw_rules: tuple[DrawRule, ...] = field(default_factory=lambda: build_draw_rules())
     startup_policies: Mapping[int, StartupPolicy] = field(default_factory=lambda: dict(STARTUP_POLICIES))
@@ -910,6 +917,11 @@ class GameData:
         if singer_id is None:
             return (0, 0)
         return tuple(self.singer_favors.get(int(singer_id), (0, 0)))    # type: ignore[return-value]
+
+    def singer_name(self, singer_id: int | None) -> str:
+        if singer_id is None:
+            return ""
+        return self.singer_names.get(int(singer_id), f"唱词人#{singer_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -1258,6 +1270,7 @@ def load_game_data(poet_ids: Iterable[int] = (),
         mods=mods,
         singer_rules=rules,
         singer_favors=favors,
+        singer_names=load_singer_names(),
         poet_mods=poet_mods,
         draw_rules=build_draw_rules(),
         startup_policies=dict(STARTUP_POLICIES),
