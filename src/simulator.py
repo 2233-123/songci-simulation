@@ -329,6 +329,10 @@ def _apply_draw_rules(rules: Sequence[E.DrawRule], state: Mapping[str, float],
     且默认答对 (用户确认「默认无条件正确」), 故「正确择豪放律」== 抽到豪放词。
 
     `grant_counts` 记录每条规则已触发次数, 用于落实 `max_grants` (「至多N层」/「上限X%」)。
+
+    **收益加成 (32513) 不作用于本函数的规则收益**（用户 2026-10-07 实机口径）：
+    只有词句自身的属性加成吃「择律收益」加成，唱词人/词人/名臣等规则收益一律按原值结算。
+    因此 `handler` 的 `grant` 与 `grant_unscaled` 现在数值等价（保留字段以备后用）。
     """
     styles = ({int(drawn_style)} if isinstance(drawn_style, int)
               else {int(x) for x in drawn_style})
@@ -363,8 +367,12 @@ def _apply_draw_rules(rules: Sequence[E.DrawRule], state: Mapping[str, float],
                 continue
         if not r.effects:
             continue
+        # **「择律收益」加成只放大词句来源的收益** (用户 2026-10-07 裁定实机口径):
+        #   词句自身的属性加成吃加成; 唱词人 / 词人 / 名臣等政策规则的收益**不吃**加成。
+        #   早期实现把 handler="grant" 的规则也一并放大, 于是唱词人 8 暮烟
+        #   「歌板+1」会随加成涨到 +2.9/轮, 显著高估收入 (达标率 99% vs 59%)。
         _apply_effects(granted, counters, r.effects, bonus, positive_only,
-                       amplify=(r.handler == "grant"), multipliers=multipliers)
+                       amplify=False, multipliers=multipliers)
         counts[r.rule_id] = counts.get(r.rule_id, 0) + 1
         fired += 1
         if r.source_policy_id in singer_policy_ids:
