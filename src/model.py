@@ -195,6 +195,10 @@ class TurnEvent:
     graceful_triggered: bool = False   # 婉约词情是否触发
     treat_as_bold: bool = False        # 本次是否「同时视为抽到豪放词」(李纲「病牛」)
     granted: dict[str, float] = field(default_factory=dict)   # 本次各属性净变化
+    # **歌板**本次变动的逐笔来源 (标签 -> 增量), 供审计日志使用。
+    # 标签形如: 词句67(关山魂梦长) / 唱词人暮烟 / 名臣柳永·恋情词3 / 婉约词情触发 / 解锁词人4·李清照
+    # 恒满足: 歌板余额 = 上一次余额 − 本次消耗 + Σ(本明细)
+    board_trace: tuple[tuple[str, float], ...] = ()
     # 择律收益(32513)加成: 本轮**实际生效**的加成 / 本轮**结束后**的累计加成
     benefit_applied: float = 0.0
     benefit_bonus_after: float = 0.0

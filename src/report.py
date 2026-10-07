@@ -502,6 +502,22 @@ def write_batch_summary_csv(summary: M.BatchSummary, stats: dict, path: Path) ->
     return _write_csv(path, batch_summary_headers(), rows)
 
 
+def fmt_board_trace(ev) -> str:
+    """把一次择律的「歌板变动来源」渲染成一行可读日志。
+
+    形如 ``词句67(关山魂梦长)+4; 名臣柳永·恋情词3+4; 婉约词情触发+2``。
+    恒满足: 歌板余额 = 上一次余额 − 本次消耗 + Σ(本列)。
+    """
+    trace = getattr(ev, "board_trace", ()) or ()
+    parts = []
+    for label, delta in trace:
+        d = float(delta)
+        if not d:
+            continue
+        parts.append(f"{label}{'+' if d > 0 else '-'}{fmt_num(abs(d))}")
+    return "; ".join(parts)
+
+
 def event_headers() -> list[str]:
     """事件流 CSV 的表头。"""
     keys = sorted({k for k in _ATTRIBUTE_ORDER})
@@ -509,7 +525,8 @@ def event_headers() -> list[str]:
             "本次消耗歌板", "歌板余额", "词元余额", "豪放词情", "婉约词情",
             "豪放词情触发", "婉约词情触发", "新解锁词人",
             "本次择律收益加成", "操作后择律收益加成", "同时视为豪放词"] + \
-           [f"本次变动_{M.ATTRIBUTE_LABELS[k]}" for k in keys]
+           [f"本次变动_{M.ATTRIBUTE_LABELS[k]}" for k in keys] + \
+           ["歌板变动来源"]
 
 
 def write_events_csv(summary: M.BatchSummary, path: Path) -> Path | None:
@@ -537,6 +554,7 @@ def write_events_csv(summary: M.BatchSummary, path: Path) -> Path | None:
                      fmt_num(1.0 + float(getattr(e, "benefit_bonus_after", 0.0))),
                      int(bool(getattr(e, "treat_as_bold", False)))]
                     + [fmt_num(granted.get(k, 0.0)) for k in keys]
+                    + [fmt_board_trace(e)]
                 )
     return path
 

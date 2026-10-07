@@ -884,6 +884,8 @@ class GameData:
     poet_names: Mapping[int, str] = field(default_factory=dict)
     poet_to_minister: Mapping[int, int] = field(default_factory=dict)
     rules_by_policy: Mapping[int, tuple[DrawRule, ...]] = field(default_factory=dict)
+    # 逐次规则 ID -> 人类可读来源标签 (如「唱词人暮烟」「名臣柳永·恋情词3」), 用于日志归因
+    rule_labels: Mapping[str, str] = field(default_factory=dict)
     # 东坡食单: 菜品 ID -> 该菜单独的修正 (每道菜互不覆盖, 因为 32513 是累加)
     dongpo_mods: Mapping[int, ModifierSet] = field(default_factory=dict)
     # 9 道菜全收集时的豪放词情层数 (老饕 ★2 = 20); 需另加苏轼名臣
@@ -1156,6 +1158,51 @@ def load_graceful_as_bold_ministers() -> frozenset[int]:
     return frozenset(int(r[0]) for r in rows)
 
 
+def load_rule_labels() -> dict[str, str]:
+    """逐次规则 ID -> 人类可读来源标签, 供日志归因 (「这一笔歌板是谁给的」)。
+
+    形如 ``唱词人暮烟`` / ``词人柳永·恋情词3`` / ``名臣柳永·恋情词3``;
+    数据不可用时返回空表 (日志退化为显示规则 ID)。
+    """
+    import db
+    out: dict[str, str] = {}
+    try:
+        # 归属映射 (唱词人/词人/名臣各自的逐次政策) 定义在 simulator 里, 故此处惰性导入,
+        # 避免 effects <-> simulator 的模块级循环依赖 (调用发生在装配期, 两个模块都已加载)。
+        import simulator as _S
+
+        rules = build_draw_rules()
+        policy_ids = sorted({int(r.source_policy_id) for r in rules if r.source_policy_id})
+        if not policy_ids:
+            return out
+        names = {int(r[0]): (r[1] or "") for r in db.fetch_all(
+            "SELECT id, policy_name FROM policy WHERE id = ANY(%s)", (policy_ids,))}
+        singer_names = {int(r[0]): (r[1] or "") for r in db.fetch_all(
+            "SELECT id, name FROM singer")}
+        poet_names = load_poet_names()
+        minister_names = {int(r[0]): (r[1] or "") for r in db.fetch_all(
+            "SELECT id, name FROM minister")}
+        owners: dict[int, str] = {}
+        for sid, ids in _S._SINGER_DRAW_POLICY_IDS.items():
+            for pid in ids:
+                owners[int(pid)] = f"唱词人{singer_names.get(int(sid), sid)}"
+        for pid, ids in _S.POET_DRAW_POLICY_IDS.items():
+            for pol in ids:
+                owners[int(pol)] = f"词人{poet_names.get(int(pid), pid)}"
+        for mid, ids in _S.MINISTER_DRAW_POLICY_IDS.items():
+            for pol in ids:
+                owners[int(pol)] = f"名臣{minister_names.get(int(mid), mid)}"
+        for r in rules:
+            if not r.source_policy_id:
+                continue
+            owner = owners.get(int(r.source_policy_id), "规则")
+            pname = names.get(int(r.source_policy_id), "")
+            out[r.rule_id] = f"{owner}·{pname}" if pname else owner
+    except Exception:
+        return out
+    return out
+
+
 def load_game_data(poet_ids: Iterable[int] = (),
                    minister_ids: Iterable[int] = (),
                    policy_ids: Iterable[int] = ()) -> GameData:
@@ -1218,6 +1265,7 @@ def load_game_data(poet_ids: Iterable[int] = (),
         poet_names=load_poet_names(),
         poet_to_minister=load_poet_minister_map(),
         rules_by_policy=index_rules_by_policy(build_draw_rules()),
+        rule_labels=load_rule_labels(),
         dongpo_mods=dongpo_mods,
         dongpo_complete_bold=complete_bold,
         graceful_as_bold_ministers=load_graceful_as_bold_ministers(),

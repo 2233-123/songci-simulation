@@ -315,6 +315,8 @@ def _apply_draw_rules(rules: Sequence[E.DrawRule], state: Mapping[str, float],
                       singer_policy_ids: frozenset[int] = frozenset(),
                       multipliers: dict[str, float] | None = None,
                       grant_counts: dict[str, int] | None = None,
+                      trace: dict[str, float] | None = None,
+                      labels: Mapping[str, str] | None = None,
                       ) -> tuple[int, int]:
     """执行每次择律触发的政策规则。
 
@@ -371,8 +373,14 @@ def _apply_draw_rules(rules: Sequence[E.DrawRule], state: Mapping[str, float],
         #   词句自身的属性加成吃加成; 唱词人 / 词人 / 名臣等政策规则的收益**不吃**加成。
         #   早期实现把 handler="grant" 的规则也一并放大, 于是唱词人 8 暮烟
         #   「歌板+1」会随加成涨到 +2.9/轮, 显著高估收入 (达标率 99% vs 59%)。
+        _b = granted.get("board", 0.0) if trace is not None else 0.0
         _apply_effects(granted, counters, r.effects, bonus, positive_only,
                        amplify=False, multipliers=multipliers)
+        if trace is not None:
+            d = granted.get("board", 0.0) - _b
+            if d:
+                label = (labels or {}).get(r.rule_id) or r.rule_id
+                trace[label] = trace.get(label, 0.0) + d
         counts[r.rule_id] = counts.get(r.rule_id, 0) + 1
         fired += 1
         if r.source_policy_id in singer_policy_ids:
@@ -518,8 +526,21 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
         multipliers: dict[str, float] = {}
         bold_triggered = False
         graceful_triggered = False
+        # **歌板变动归因** (仅在记录事件流时收集, 不影响热路径性能):
+        #   标签 -> 本笔增量, 满足 余额 = 上一次余额 − 消耗 + Σ(trace)
+        board_trace: dict[str, float] = {}
+        board_src_label = f"词句{verse.id}({verse.ci_name})"
+
+        def _take(label: str, before: float) -> None:
+            """把「本笔对歌板的净影响」记进归因表 (0 不记)。"""
+            if not record:
+                return
+            d = granted.get("board", 0.0) - before
+            if d:
+                board_trace[label] = board_trace.get(label, 0.0) + d
 
         # 5. 词句效果: 预计算的属性效果内联 (热路径), 特殊效果 (881/词情等) 另走慢路径
+        _b = granted.get("board", 0.0)
         for attr, value in verse.attr_effects:
             if bonus:
                 if value > 0.0:
@@ -530,8 +551,11 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
             # 例: 条目基础 2 歌板 × 收益系数 3.95 = 7.9 -> **7**。
             value = _floor_grant(attr, value)
             granted[attr] = granted.get(attr, 0.0) + value
+        _take(board_src_label, _b)
         if verse.special_effects:
+            _b = granted.get("board", 0.0)
             _apply_effects(granted, counters, verse.special_effects, bonus, positive_only)
+            _take(f"{board_src_label}·特殊效果", _b)
 
         # 6. 词人解锁 —— **只结算「词人效果」, 不带名臣效果**
         #    (用户 2026-10-03 确认: 作为词人被解锁后只会有词人效果而不会有名臣效果。
@@ -546,9 +570,11 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
             pm = game.poet_mods.get(pid)
             if pm:
                 runtime.merge(pm)
+                _b = granted.get("board", 0.0)
                 for attr, delta in pm.startup_attrs.items():
                     # 局中解锁词人带来的属性增减也属于"择律"产物 -> 同样取整
                     granted[attr] = granted.get(attr, 0.0) + _floor_grant(attr, delta)
+                _take(f"解锁词人{pid}·{game.poet_name(pid)}", _b)
                 bonus += pm.benefit_bonus
                 # **词情层数加成也必须立刻生效** (苏轼词人「豪放+5 / 婉约+5」)。
                 # 早期只补了 startup_attrs 与 benefit_bonus, 漏掉词情 ——
@@ -568,12 +594,15 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
             result.poets_unlocked += 1
             if singer is not None and singer.module == "on_poet_unlock" \
                     and singer.effect_type is not None:
+                _b = granted.get("board", 0.0)
                 _apply_effect(granted, counters, singer.effect_type, singer.effect_value)
+                _take(f"唱词人{singer.name}·解锁词人时", _b)
                 result.singer_triggered += 1
 
         # 唱词人 苏轸: 正确择苏轼词
         if singer is not None and singer.module == "su_shi" \
                 and singer.target_poet_id in verse.poet_ids:
+            _b = granted.get("board", 0.0)
             if singer.effect_type is not None:
                 _apply_effect(granted, counters, singer.effect_type, singer.effect_value)
             if singer.sentiment_bonus:
@@ -581,6 +610,7 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
                               float(singer.sentiment_bonus))
                 _apply_effect(granted, counters, C.EFF_GRACEFUL_SENTIMENT,
                               float(singer.sentiment_bonus))
+            _take(f"唱词人{singer.name}·唱中本命词人", _b)
             result.singer_triggered += 1
 
         # 每次择律触发的政策规则; singer_policy_ids 内的触发同时计入 singer_triggered
@@ -599,7 +629,8 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
         fired, singer_fired = _apply_draw_rules(
             active_rules, state, granted, counters, eff_styles, bonus,
             positive_only, singer_policy_ids=singer_policy_ids,
-            multipliers=multipliers, grant_counts=grant_counts)
+            multipliers=multipliers, grant_counts=grant_counts,
+            trace=board_trace if record else None, labels=game.rule_labels)
         result.singer_triggered += singer_fired
         _ = fired
 
@@ -627,15 +658,19 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
                 bold_triggered = True
                 result.sentiment_trigger_count += 1
                 result.bold_triggers += 1
+                _b = granted.get("board", 0.0)
                 _apply_effect(granted, counters, C.EFF_BOARD, 1.0)
                 _apply_effect(granted, counters, C.EFF_ARMY_MORALE, 1.0)
+                _take("豪放词情触发", _b)
         if as_graceful and graceful > 0:
             if rng.random() < sentiment_trigger_probability(graceful):
                 graceful_triggered = True
                 result.sentiment_trigger_count += 1
                 result.graceful_triggers += 1
+                _b = granted.get("board", 0.0)
                 _apply_effect(granted, counters, C.EFF_BOARD, 2.0)
                 _apply_effect(granted, counters, C.EFF_POPULAR_SUPPORT, -1.0)
+                _take("婉约词情触发", _b)
 
         # 逐次「后续择律收益」加成 (王安石词人政策 30028: 每次 +1%) -> 累加进本局 bonus
         _gain = granted.pop(BENEFIT_BONUS_KEY, 0.0)
@@ -652,12 +687,18 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
         for attr, mult in multipliers.items():
             if attr.startswith("__"):
                 continue
+            _b = state.get(attr, 0.0)
             state[attr] = _floor_grant(attr, state.get(attr, 0.0) * (1.0 + mult))
+            if record and attr == "board" and state[attr] != _b:
+                board_trace["百分比乘算"] = board_trace.get("百分比乘算", 0.0) + (state[attr] - _b)
         # 下限: 只有歌板/词元不允许为负 (M.NON_NEGATIVE_ATTRIBUTES)。
         # 民心/军心/腐化 **不设上下限** —— 虽然 `EffectTypeConfig` 里它们写着 `[0,100]`,
         # 但用户 2026-10-03 明确「民心军心腐化都不设上下限」, 故允许为负、也不封顶。
         for attr in M.NON_NEGATIVE_ATTRIBUTES:
             if state.get(attr, 0.0) < 0.0:
+                if record and attr == "board":
+                    board_trace["下限钳制(歌板不为负)"] = (
+                        board_trace.get("下限钳制(歌板不为负)", 0.0) - state[attr])
                 state[attr] = 0.0
         # 上限: 只有繁荣 (EffectTypeConfig 31480 的 MaxValue=50)
         if prosperity_cap is not None:
@@ -691,6 +732,7 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
                 benefit_applied=float(benefit_applied),
                 benefit_bonus_after=float(bonus),
                 granted={k: v for k, v in granted.items() if not k.startswith("__")},
+                board_trace=tuple(board_trace.items()),
             ))
 
         if state.get("board", 0.0) >= float(config.end_threshold):
