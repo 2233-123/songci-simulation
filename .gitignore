@@ -15,7 +15,6 @@ tests/*
 *.json
 
 # 本 PR 附带的复核脚本与规则层单测 (其余 tools/tests 仍不入库)
-!tools/convert_game_configs.py
 !tools/run_without_db.py
 !tools/mc_compare.py
 !tests/test_game_rules.py

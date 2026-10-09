@@ -11,8 +11,10 @@
     在**上游自己的代码**里的影响，不需要建库；
   * 快速跑单局或批量，不必等 ingest。
 
+前置：把 8 份配置 JSON 放在 `游戏数据/`（或仓库根目录），文件名与
+`src/config.py` 里的常量一致（本项目已有的导出流程即可）。
+
 用法：
-    python tools/convert_game_configs.py --raw-dir <配置 JSON 目录>
     python tools/run_without_db.py --runs 2000                      # 修正口径
     python tools/run_without_db.py --runs 2000 --legacy             # 旧口径（对比）
     python tools/run_without_db.py --singer 9 --accuracy 0.6
@@ -46,7 +48,7 @@ def load_table(name: str, root: Path) -> list[dict]:
             rows = obj.get("dataList") if isinstance(obj, dict) else obj
             if isinstance(rows, list):
                 return rows
-    raise SystemExit(f"缺少 {name}；请先跑 tools/convert_game_configs.py")
+    raise SystemExit(f"缺少 {name}；请把它放到 游戏数据/ 或仓库根目录")
 
 
 def build_game(root: Path) -> E.GameData:
