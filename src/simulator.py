@@ -26,6 +26,7 @@ import random
 from typing import Any, Iterable, Mapping, Sequence
 
 import config as C
+import game_rules as GR
 import effects as E
 import model as M
 
@@ -167,7 +168,8 @@ def _apply_effects(granted: dict[str, float], counters: dict[str, int],
                    bonus: float = 0.0,
                    positive_only: bool = True,
                    amplify: bool = True,
-                   multipliers: dict[str, float] | None = None) -> None:
+                   multipliers: dict[str, float] | None = None,
+                   whitelist_only: bool = True) -> None:
     """批量应用效果 (热路径)。
 
     绝大多数效果是「属性效果」(EFFECT_VALUE_ATTR 命中), 此处内联处理以避免
@@ -197,6 +199,9 @@ def _apply_effects(granted: dict[str, float], counters: dict[str, int],
             continue
         attr = attr_map.get(etype)
         if attr is not None:
+            if whitelist_only and etype not in GR.REWARD_MULTIPLY_TYPES:
+                granted[attr] = g_get(attr, 0.0) + _floor_grant(attr, value)
+                continue
             if value > 0.0:
                 value = value * factor
             elif not positive_only:
@@ -497,6 +502,21 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
         full_pool = game.verses.get(drawn_style,
                                     unlock_all=config.unlock_all_verses,
                                     owned_minister_ids=owned_ministers)
+        # 修正: 「擅长词牌」此前完全未参与抽取 (README 的 C-2 / 明确未建模)。
+        # 真实谓词是 **含「全部」 ∨ 风格匹配 ∨ 词牌∈擅长词牌**，因此擅长词牌是
+        # **跨风格放宽**（能在别的律下唱自己擅长的词牌），过滤后不足候选数时回退全量。
+        # 谓词: 含「全部」 ∨ 词句风格 == 抽到的律 ∨ 词牌 ∈ 擅长词牌；
+        # 过滤后不足候选数时回退全量。
+        if getattr(config, "specialty_pool_rule", True) and getattr(game, "singer_specialty", None):
+            spec = game.singer_specialty.get(int(config.singer_id or -1), ())
+            if spec:
+                all_pool = tuple(
+                    v for st in (M.STYLE_BOLD, M.STYLE_GRACEFUL)
+                    for v in game.verses.get(st, unlock_all=config.unlock_all_verses,
+                                             owned_minister_ids=owned_ministers))
+                full_pool = tuple(GR.specialty_pool(
+                    all_pool, spec, drawn_style,
+                    int(GR.SONGCI_VALUE["OptionCount"]), all_verses=full_pool))
         if not full_pool:
             stop_reason = M.STOP_INSUFFICIENT
             break
@@ -516,6 +536,7 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
         turn += 1
 
         state["board"] -= cost
+
         bonus = _update_growth_rules(active_rules, rule_layers, state, bonus)
         factor = 1.0 + bonus
         benefit_applied = bonus          # 本轮实际生效的择律收益加成
@@ -542,7 +563,11 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
         # 5. 词句效果: 预计算的属性效果内联 (热路径), 特殊效果 (881/词情等) 另走慢路径
         _b = granted.get("board", 0.0)
         for attr, value in verse.attr_effects:
-            if bonus:
+            # 修正: 「后续择律收益提升」(32513) **只放大 7 种效果**
+            # （只有 game_rules.REWARD_MULTIPLY_TYPES 里的 7 种吃倍率）。
+            # 战斗力/发展年数/乐感/词情/诗意/灵犀等都不吃这个倍率。
+            if bonus and (attr in GR.REWARD_MULTIPLY_ATTRS
+                          or not getattr(config, "reward_multiply_whitelist", True)):
                 if value > 0.0:
                     value = value * factor
                 elif not positive_only:
@@ -554,7 +579,8 @@ def run_once(game: E.GameData, config: M.SimulationConfig,
         _take(board_src_label, _b)
         if verse.special_effects:
             _b = granted.get("board", 0.0)
-            _apply_effects(granted, counters, verse.special_effects, bonus, positive_only)
+            _apply_effects(granted, counters, verse.special_effects, bonus, positive_only,
+                           whitelist_only=getattr(config, "reward_multiply_whitelist", True))
             _take(f"{board_src_label}·特殊效果", _b)
 
         # 6. 词人解锁 —— **只结算「词人效果」, 不带名臣效果**
