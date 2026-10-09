@@ -2,10 +2,21 @@
 """M3 · 效果语义层 (effects.py)
 
 职责:
-  1. 把「唱词人」FeatureDesc 编译为确定性规则 (DB 的 Trigger/Remove 池指向军事政策,
-     是占位数据 —— 实测 8/9 位唱词人的 FeatureDesc 与 30000-30007 政策描述不匹配,
-     且唱词人6「后续择律收益+10%」对应政策 30005 的 EffectList 为空, 故以
-     FeatureDesc 为权威语义来源)。
+  1. 把「唱词人」效果编译为确定性规则。
+
+     **2026-10 修正**：原先认为「Trigger/Remove 池指向军事政策、是占位数据」不成立。
+     真实链路是 `SongCiSingerConfig.TriggerCommonEffectPoolConfigId` → 效果池 →
+     `1030 AddPolicy` → 政策，权威效果就是那条政策的 `EffectList`：
+
+       * 9 位唱词人里 **8 位**的 FeatureDesc 与**效果池的 EffectDesc** 逐字一致；
+       * 唯一例外是唱词人 2「铁衣」↔ 政策 30001：其 EffectDesc
+         「必定唱出词句，但后续择律收益-10%」全表孤例且无配套 32513 负值，
+         而 `TriggerTime=81` + `EffectList=[32510]=1.0` 正是「每次正确→歌板+1」，
+         判定为**策划文案残留**；
+       * 唱词人 6 的 +10% **挂在池 456 上**（政策 30005 的 EffectList 为空是对的）。
+
+     规则的触发时机以 `PolicyConfig.TriggerTime`（= `eEffectTriggerType`）为准，
+     不再从文案猜。解析实现见 `game_rules.singer_effects_from_pools()`。
   2. 把「政策」效果编译为: 开局一次性 / 每次择律触发 / 被动加算 三类修正器。
   3. 解析 1030「条件效果」: 其 value 是**子政策 ID**, 条件存在子政策的
      policy_condition.condition_effect / condition_values 上。
@@ -249,6 +260,11 @@ def load_singer_names() -> dict[int, str]:
 
 # 模块级只读配方表 (测试可独立使用, 不触发连库)
 SINGER_RULES: dict[int, SingerRule] = {
+    # module="none" **是正确的**: 3 个候选里必有正解(答对才结束本次择律),
+    # 且本模型的数据里每首词都有准确答案, 所以"每次择律都正确"结构性成立,
+    # 「每次择律错误时, 获得歌板+1」恒不触发。
+    # 证据: 效果池 451 -> 政策 30000 (TriggerTime=80 = ChooseCiWrong),
+    #       该触发类型确实存在于 eEffectTriggerType, 只是本模型不会走到。
     1: SingerRule(singer_id=1, feature_desc="每次择律错误时，获得歌板+1", module="none"),
     2: SingerRule(singer_id=2, feature_desc="每次择律正确时，获得歌板+1",
                   module="every_correct", effect_type=C.EFF_BOARD, effect_value=1.0),
@@ -267,8 +283,11 @@ SINGER_RULES: dict[int, SingerRule] = {
     8: SingerRule(singer_id=8, feature_desc="正确择婉约律时，获得歌板+1",
                   module="on_style", effect_type=C.EFF_BOARD, effect_value=1.0,
                   style=M.STYLE_GRACEFUL),
+    # 修正: 文案写「歌板+4」, 但效果池 650 -> 政策 40014 的实际 EffectValueList 是
+    # [3.0, 1.0, 1.0] (歌板+3、豪放/婉约词情各+1), 另有 40036 给词元+2。
+    # 以效果数据为准 (game_rules.singer_effect_value 可自动取回该值)。
     9: SingerRule(singer_id=9, feature_desc="正确择苏轼词时，获得歌板+4、豪放和婉约词情+1",
-                  module="su_shi", effect_type=C.EFF_BOARD, effect_value=4.0,
+                  module="su_shi", effect_type=C.EFF_BOARD, effect_value=3.0,
                   sentiment_bonus=1, target_poet_id=SU_SHI_POET_ID,
                   target_poet_name=SU_SHI_POET_NAME),
 }
@@ -784,6 +803,9 @@ class VerseRow:
     style: int
     poet_ids: tuple[int, ...]
     effects: tuple[tuple[int, float], ...]
+    #: 词牌名（`verse.ci_pai_name`）。**此前没有这个字段**，所以「擅长词牌」
+    #: 这条规则根本无法实现 —— 这是 README 里 C-2「词牌未进入模拟」的根因。
+    ci_pai_name: str = ""
     unlock_minister_ids: tuple[int, ...] = ()
     is_special: bool = False
     # 预计算: (属性键, 值) 列表 —— 热路径直接使用, 避免每轮查表
@@ -883,6 +905,9 @@ class GameData:
     mods: ModifierSet
     singer_rules: Mapping[int, SingerRule] = field(default_factory=lambda: dict(SINGER_RULES))
     singer_favors: Mapping[int, tuple[int, int]] = field(default_factory=dict)
+    #: 唱词人 ID -> 擅长词牌名（`SongCiSingerConfig.SpecialtyCiPaiNames`）。
+    #: 该字段参与"本题正确词句池"的筛选，见 `game_rules.specialty_pool()`。
+    singer_specialty: Mapping[int, tuple[str, ...]] = field(default_factory=dict)
     singer_names: Mapping[int, str] = field(default_factory=dict)
     poet_mods: Mapping[int, ModifierSet] = field(default_factory=dict)
     draw_rules: tuple[DrawRule, ...] = field(default_factory=lambda: build_draw_rules())
@@ -984,11 +1009,13 @@ def load_verse_rows() -> list[VerseRow]:
             special_map[vid] = True
 
     out: list[VerseRow] = []
-    for vid, name, style in db.fetch_all("SELECT id, ci_name, style FROM verse ORDER BY id"):
+    for vid, name, style, cipai in db.fetch_all(
+            "SELECT id, ci_name, style, ci_pai_name FROM verse ORDER BY id"):
         vid = int(vid)
         out.append(VerseRow(
             id=vid,
             ci_name=name or "",
+            ci_pai_name=(cipai or ""),
             style=int(style),
             poet_ids=tuple(poet_map.get(vid, ())),
             effects=tuple(eff_map.get(vid, ())),

@@ -2,8 +2,9 @@
 输出结果/
 _probe/
 docs/
-tools/
-tests/
+# 注意: 目录整体忽略时 git 无法用 ! 反选单个文件, 故写 `tools/*` / `tests/*`
+tools/*
+tests/*
 配置_*.json
 
 # 数据库口令 (本地开发用)
@@ -12,6 +13,12 @@ tests/
 # 游戏解包数据 (版权不属于本项目, 需自备)
 游戏数据/
 *.json
+
+# 本 PR 附带的复核脚本与规则层单测 (其余 tools/tests 仍不入库)
+!tools/convert_game_configs.py
+!tools/run_without_db.py
+!tools/mc_compare.py
+!tests/test_game_rules.py
 
 # Python
 __pycache__/

@@ -122,6 +122,19 @@ class SimulationConfig:
     init_verse_point: float = 0.0       # 词元
     # 初始「后续择律收益加成」(32513), 例如 0.1 表示 +10%
     init_benefit_bonus: float = 0.0
+    # 说明：**不建模「答错」**。
+    #   游戏的 3 个候选里必有正解（答对才结束本次择律），而本模型的数据里每首词都
+    #   有准确答案（`CiPaiName` / `CorrectVerseId`），所以"每次择律都正确"是
+    #   **结构性成立**的前提，不是简化假设；唱词人 1「每次择律错误时，获得歌板+1」
+    #   因此恒不触发（`SINGER_RULES` 里 `module="none"` 是对的）。
+
+    #: 是否只放大 game_rules.REWARD_MULTIPLY_TYPES 里的 7 种效果（默认 True = 与游戏一致）。
+    #: 置 False 可复现旧口径（放大全部词句效果）用于对比。
+    reward_multiply_whitelist: bool = True
+    #: 是否按「擅长词牌」筛本题的正确词句池（默认 True = 与游戏一致）。
+    #: 规则: 含「全部」 ∨ 词句风格 == 抽到的律 ∨ 词牌 ∈ 擅长词牌；
+    #: 过滤后不足 OptionCount(3) 条时回退全量。证据见 game_rules.specialty_pool。
+    specialty_pool_rule: bool = True
     init_bold_sentiment: int = 0        # 豪放词情层数
     init_graceful_sentiment: int = 0    # 婉约词情层数
     # 初始属性。
